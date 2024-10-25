@@ -1,0 +1,1068 @@
+---
+title: "Final Project"
+author: "Jeong Kyu Lee"
+date: "2023-05-16"
+output:
+    html_document:
+    toc: true
+    toc_float: true
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# setwd("~/Desktop/Spring 2023/Statistics and Data Analytics/Final Project")
+library(countrycode)
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(tidyr)
+library(tidyverse)
+library(readxl)
+library(gridExtra)
+library(ggplot2)
+library(grid)
+library(stargazer)
+library(broom)
+library(texreg)
+library(dagitty)
+
+# mask for all countries
+validcodes = codelist$iso3c
+
+# literacy rate - world development indicator
+education = read.csv("education.csv")
+
+# wealth indicators - world development indicator
+wealth = read.csv("wealth.csv")
+
+# covid indicators - WHO
+covid = read.csv("WHO-COVID-19-global-data.csv")
+
+# population - used to get a percentage for the covid indicator (from UN)
+population = read.csv("population.csv")
+population = population[,c(4, 13, 17)]
+
+```
+
+```{r, warning = FALSE, message = FALSE}
+
+# deleting useless rows/columns
+education = education[,-4]
+education = education[education$Country.Code %in% validcodes,]
+
+wealth = wealth[,-4]
+wealth = wealth[wealth$Country.Code %in% validcodes,]
+
+covid$Country_code= countrycode(sourcevar = covid$Country_code, 
+                                origin = "iso2c",
+                                destination ="iso3c" )
+covid = covid[covid$Country_code %in% validcodes,]
+covid <- covid[complete.cases(covid), ] #removes data with missing country codes
+
+
+population = population[population$ISO3_code %in% validcodes,]
+
+# replacing unavailable data ".." with NA
+education[education == ".."] = NA
+wealth[wealth == ".."] = NA
+
+# renaming columns
+colnames(education) = c("Country_Name", "Country_Code", "Year", "Primary_Enrollment_Rate", "Youth_Literacy_Rate" ,
+                        "Secondary_Enrollment_Rate")
+
+colnames(wealth) = c("Country_Name", "Country_Code", "Year", "Highest_10ps",
+                     "Lowest_10ps", "GDP_pc", "GNI_pc", "Poverty_ratio", "Gini",
+                     "National_income_pc", "Urban_pop", "Gross_savings", "Unemployment_rate", "Net_primary_income")
+
+colnames(population) = c("Country_Code", "Year", "Population")
+
+# simplifying the covid data to per year - to match other data sets
+covid$Date_reported = as.Date(covid$Date_reported)
+covid_year = covid %>%
+  group_by(Country, Country_code, Year = year(Date_reported)) %>%
+  summarize(New_cases = sum(New_cases))
+
+# removing all rows with year == 2023 since it is not complete
+covid_year <- covid_year %>% filter(Year != 2023)
+
+# changing data formats
+education$Year = as.numeric(education$Year)
+education$Youth_Literacy_Rate = as.numeric(education$Youth_Literacy_Rate)
+education$Secondary_Enrollment_Rate = as.numeric(education$Secondary_Enrollment_Rate)
+
+
+wealth$Year = as.numeric(wealth$Year)
+wealth$Highest_10ps = as.numeric(wealth$Highest_10ps)
+wealth$Lowest_10ps = as.numeric(wealth$Lowest_10ps)
+wealth$GDP_pc = as.numeric(wealth$GDP_pc)
+wealth$GNI_pc = as.numeric(wealth$GNI_pc)
+wealth$Poverty_ratio = as.numeric(wealth$Poverty_ratio)
+wealth$Gini = as.numeric(wealth$Gini)
+wealth$National_income_pc = as.numeric(wealth$National_income_pc)
+wealth$Urban_pop = as.numeric(wealth$Urban_pop)
+wealth$Gross_savings = as.numeric(wealth$Gross_savings)
+wealth$Unemployment_rate = as.numeric(wealth$Unemployment_rate)
+wealth$Net_primary_income = as.numeric(wealth$Net_primary_income)
+
+
+population$Year = as.numeric(population$Year)
+population$Population = as.numeric(population$Population)
+population$Population = 1000*population$Population #population is in thousands
+
+# Remove rows with year > 2021 (they are estimates using models)
+population <- subset(population, Year <= 2021 & Year > 2018)
+
+# merge covid_year and population and make it new_cases/population (a percentage)
+covid_prop = left_join(covid_year, population,
+                       by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+covid_prop = covid_prop[complete.cases(covid_prop),]  #remove rows with missing data
+
+# add column for the proportion of population of new cases
+covid_prop$Cases_prop = covid_prop$New_cases/covid_prop$Population * 100
+
+#add rows for year 2019 and add into data frame - make all values 0
+new_rows2 = expand.grid(Country_code = unique(covid_prop$Country_code), Year = 2019, Cases_prop = 0)
+
+covid_prop = rbind(covid_prop, new_rows2)
+
+#add in the country names
+covid_prop = covid_prop %>% group_by(Country_code) %>% 
+  fill(Country, .direction = "down")
+  
+#Create the data frame with all variables
+main_data_frame_youthliteracy = covid_prop %>% select(Country, Country_code, Year, Cases_prop)
+
+main_data_frame_youthliteracy = left_join(main_data_frame_youthliteracy, select(education, c("Country_Code", "Year", "Youth_Literacy_Rate")), 
+                            by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+#removing some variables because of very little data availbility - ~70
+main_data_frame_youthliteracy = left_join(main_data_frame_youthliteracy, select(wealth, -c("Country_Name", "Highest_10ps", "Lowest_10ps", "Poverty_ratio", "Gini")),
+                                          by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+#Create data frame for secondary enrollment rate
+main_data_frame_secondary = covid_prop %>% select(Country, Country_code, Year, Cases_prop)
+
+main_data_frame_secondary = left_join(main_data_frame_secondary, select(education, c("Country_Code", "Year", "Secondary_Enrollment_Rate")), 
+                                          by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+#removing some variables because of very little data availbility - ~70
+main_data_frame_secondary = left_join(main_data_frame_secondary, select(wealth, -c("Country_Name", "Highest_10ps", "Lowest_10ps", "Poverty_ratio", "Gini")),
+                                          by = c("Country_code" = "Country_Code", "Year" = "Year"))                                          
+
+
+
+```
+
+# Introduction
+
+## Research Question and Hypothesis
+
+This report addresses the research question: ‘How did the impact of COVID-19 on education differ across countries with different levels of GDP per capita?’
+
+The recent COVID-19 pandemic has significantly affected and disrupted many aspects of society, but it is without doubt that education has been one of the most affected sectors worldwide. Most academic institutions, including schools and universities, either closed or transitioned into remote learning, and thus, experienced impacts on education outcomes.
+
+However, it is questionable whether the impact of the disruption is evenly distributed across different countries of different socioeconomic groups. Specifically, a country’s Gross Domestic Product (GDP) per capita, a widely used economic development indicator, could significantly impact the extent to which a country’s education system responds to such disruptions as the COVID-19. 
+
+The tested hypothesis is that the impact of COVID-19 on education would have been less negative for countries with higher GDP per capita than for countries with lower GDP per capita as countries with higher GDP per capita would have been more resilient to the disruptions. These countries may have been more capable of efficiently and effectively transitioning into online learning by offering support to students, like providing technology devices or Internet access, and implementing effective strategies to minimize learning or education outcome losses.
+
+In examining the relationship between GDP per capita, the impact of COVID-19, and education outcomes, this report aims to provide insights that could inform future policy decisions.
+
+&nbsp;
+
+## Regression Model
+
+```{r}
+#creating a DAG
+g = dagitty("dag{
+            COVID_19 -> Education
+            GDP_per_capita -> COVID_19
+            GDP_per_capita -> Education
+            }")
+
+coordinates(g) = list(x = c(COVID_19 = 1, Education = 2, GDP_per_capita = 1.5),
+                      y = c(COVID_19 = 1, Education = 1, GDP_per_capita = 1.5))
+
+plot(g, main = "")
+
+```
+
+Above is a directed acyclic graph (DAG) representation of the linear regression model. The independent variable is the COVID-19 cases, the dependent variable is the education, and a confounding variable is GDP per capita.
+
+An arrow goes from GDP per capita to COVID-19 cases as countries with higher levels of GDP per capita may have better healthcare infrastructure and quality, higher availability of resources, more advanced technology that could allow for fast and efficient spread of information regarding different government policies or news related to the pandemic, and other factors that could affect the number of COVID-19 cases.
+
+An arrow goes from GDP per capita to education as countries with higher GDP per capita might have more high quality educational resources and educators, more investments - both public and private - in education, higher spending and allocation of resources on education, and other factors that could impact education.
+
+Finally, an arrow goes from COVID-19 cases to education as the pandemic has led to the closure of most academic institutions, which has led to students either not being able to continue learning or shifting towards remote learning environments, which could be less effective for some students. These factors, alongside others, could impact education.
+
+$$\text{Education} = \alpha + \beta_1\text{GDP_pc} + \beta_2\text{Cases_prop} + \beta_3\text{GDP_pc}\times\text{Cases_prop} + \beta_4\text{GNI_pc} + \beta_5\text{National_income_pc}\\ \qquad + \beta_6\text{Urban_pop} + \beta_7\text{Gross_savings} + \beta_8\text{Unemployment_rate} + \beta_9\text{Net_primary_income} + \epsilon$$
+
+Above is the regression model used in this report. It is a linear regression with an interaction term between GDP per capita and COVID-19 cases, that is used to evaluate the effect of COVID-19 cases on education at different levels of GDP per capita. Control variables have also been used to reduce the omitted variable bias – GNI per capita, National income per capita, Urban population, Gross savings, Unemployment rate, and Net primary income. Additionally, because two different indicators are used to represent education - youth literacy rate and gross secondary enrollment rate - two linear regressions will be analyzed, one for each of the two indicators.
+
+&nbsp;
+
+## Data Sources
+
+For all variables, data ranging from 2019 to 2021 was utilized. Data from 2019 represented the values before COVID-19 and values from 2020 and 2021 represented the values during the pandemic. In doing so, a comparison of values before and after the COVID-19 pandemic was possible. Data from 2022 was unused as most of the data for 2022 was missing for most variables.
+
+As a measure of COVID-19, the value for new cases was used. Data for the number of new COVID-19 cases was sourced from the World Health Organization (WHO). The unit of analysis of the raw data was per country, per day, and because the unit of analysis for all other variables was per country, per year, the COVID-19 data was adjusted to this same unit of analysis, by summing all the new cases of each year. Additionally, for a standardized comparison, the COVID-19 data was further adjusted to a proportion of the population for each country. To do that, population data was sourced from the United Nations (UN), and the new COVID-19 cases value was divided by the population for each country, for each given year. Furthermore, all countries were assigned the value ‘0’ for the COVID-19 cases for 2019, as the pandemic had not proliferated during this period and because there was no existing data.
+
+As a measure of education, two variables were used: the youth literacy rate, as a percentage of the population within the range of 15 to 24 years, and the gross secondary school enrollment rate, calculated by dividing the number of students enrolled in secondary education, regardless of age, by the population of the official age group that corresponds to secondary education. The value for gross secondary school enrollment rate could exceed 100% due to its calculation and thus, the net secondary school enrollment rate was preferred, but could not be used due to the data set missing most of the values. Limitations will further be discussed later in the report. Both indicators of education were sourced from the World Bank. The primary school enrollment rate was initially considered to be used as another education indicator, but most data observations were missing and thus, it was removed.
+
+The GDP per capita data was sourced from the World Bank, and is measured in current US dollars.
+
+The control variables were also sourced from the World Bank. The GNI per capita is measured in current LCU, which stands for local currency unit, the adjusted net national income per capita is in current US dollars, the urban population is expressed as a percentage of the total population, the gross savings is expressed as a percentage of GDP, the unemployment rate is the percentage of the total labor force and is a national estimate, and the net primary income from abroad is measured in current US dollars. There were four other variables that were initially considered as additional control variables: the income share held by the highest 10%, the income share held by the lowest 10%, the poverty headcount ratio at national poverty lines, expressed as a percentage of population, and the Gini index. These variables were all sourced from the World Bank as well. However, they were removed due to very little existing data (just around 70 observations) for the years 2019 to 2021.
+
+&nbsp;
+
+# Key Variables
+
+### Youth Literacy Rate
+
+```{r, warning = FALSE, message = FALSE}
+
+# data visualisation of youth literacy rate distributions
+grid.arrange(
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2019)) +
+    aes(x = Youth_Literacy_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 105)) +
+    ylim(0, 40) +
+    xlab("Youth Literacy Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2019")
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2020)) +
+    aes(x = Youth_Literacy_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 105)) +
+    ylim(0, 40) +
+    xlab("Youth Literacy Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2020")
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2021)) +
+    aes(x = Youth_Literacy_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 105)) +
+    ylim(0, 40) +
+    xlab("Youth Literacy Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2021")
+  ,
+  nrow = 1,
+  top = textGrob("Figure 1.1 Youth Literacy Rate Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+```
+
+Figure 1.1 presents histograms of the youth literacy rate across the three years. The distribution for all three years is significantly skewed to the left, which was predictable. As basic education is a requirement for most countries nowadays, by the ages of 15~24, most people are literate. It can also be seen that there is more available data for the year 2021 in comparison to the other years. Thus, even though it may initially seem as if there is a bigger proportion of values that are not close to 100%, if the proportion of the number of existing data is taken into account, it seems that the youth literacy rate did not vary much between the three years. 
+
+&nbsp;
+
+### Secondary School Enrollment Rate (% Gross)
+
+```{r, warning = FALSE, message = FALSE}
+
+# data visualisation of secondary enrollment rate distributions
+grid.arrange(
+  ggplot(data = main_data_frame_secondary %>% filter(Year == 2019)) +
+    aes(x = Secondary_Enrollment_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 160)) +
+    ylim(0, 18) +
+    xlab("Enrollment Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2019")
+  ,
+  ggplot(data = main_data_frame_secondary %>% filter(Year == 2020)) +
+    aes(x = Secondary_Enrollment_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 160)) +
+    ylim(0, 18) +
+    xlab("Enrollment Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2020")
+  ,
+  ggplot(data = main_data_frame_secondary %>% filter(Year == 2021)) +
+    aes(x = Secondary_Enrollment_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 160)) +
+    ylim(0, 18) +
+    xlab("Enrollment Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2021")
+  ,
+  nrow = 1,
+  top = textGrob("Figure 2.1 Secondary School Enrollment Rate (% of Gross) Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+
+```
+
+Figure 2.1 displays histograms of the gross secondary school enrollment rates. The enrollment rate values seem to have decreased overall for the year 2021, and the histogram seems to be more skewed to the left with the mean being similar to the other two years. Some of the larger percentage values seem to have disappeared and some lower percentage values, below 25%, seem to have been introduced. It is also worth noticing, however, that there are much less observations for 2021 in comparison to the other years. The histogram for 2019 and 2020 seem to be normally distributed.
+
+&nbsp;
+
+### GDP Per Capita
+
+```{r, warning = FALSE, message = FALSE}
+
+# data visualization of GDP distributions
+grid.arrange(
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2019)) +
+    aes(x = GDP_pc) +
+    geom_histogram(binwidth = 5000) +
+    xlab("GDP Per Capita") +
+    ylab("Frequency") +
+    coord_cartesian(xlim = c(-0, 250000)) +
+    ylim(0, 60) +
+    ggtitle("2019") +
+    scale_x_continuous(breaks = seq(0, 240000, 120000), labels = seq(0, 240000, 120000))
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2020)) +
+    aes(x = GDP_pc) +
+    geom_histogram(binwidth = 5000) +
+    xlab("GDP Per Capita") +
+    ylab("Frequency") +
+    coord_cartesian(xlim = c(0, 250000)) +
+    ylim(0, 60) +
+    ggtitle("2020") +
+    scale_x_continuous(breaks = seq(0, 240000, 120000), labels = seq(0, 240000, 120000))
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2021)) +
+    aes(x = GDP_pc) +
+    geom_histogram(binwidth = 5000) +
+    xlab("GDP Per Capita") +
+    ylab("Frequency") +
+    coord_cartesian(xlim = c(0, 250000)) +
+    ylim(0, 60) +
+    ggtitle("2021") +
+    scale_x_continuous(breaks = seq(0, 240000, 120000), labels = seq(0, 240000, 120000))
+  ,
+  nrow = 1,
+  top = textGrob("Figure 3.1 GDP per capita Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+```
+
+Figure 3.1 presents histograms of the GDP per capita over the three years. All three graphs seem to be skewed to the right, with very high clusters around very small values (~ 0). Data observation numbers also seem pretty constant throughout the years. Interestingly, while there seems to be some outliers for all three years, in 2021, there is one outlier that is isolated individually from all other values and outliers; this point belongs to Monaco. Also, in 2019 and 2021, the cluster is spread out until around 90,000 USD, but for 2020, the cluster shifts slightly leftwards and cuts off at around 60,000 USD instead. It may be that this is due to the COVID-19 pandemic; at 2020, the pandemic had proliferated very quickly and most companies, institutions, and sectors closed, but by 2021, most transitioned towards remote working environments and most operations resumed. However, this is only a possibility and is not the causation.
+
+&nbsp;
+
+### New COVID-19 Cases (% of Population)
+
+```{r, warning = F, message = F}
+
+# data visualisation of COVID distributions - no 2019 because it's all 0 anyways
+grid.arrange(
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2020)) +
+    aes(x = Cases_prop) +
+    geom_histogram(binwidth = 1) +
+    coord_cartesian(xlim = c(0, 25)) +
+    ylim(0, 120) +
+    xlab("New COVID-19 Cases (% of Population)") +
+    ylab("Frequency") +
+    ggtitle("2020")
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2021)) +
+    aes(x = Cases_prop) +
+    geom_histogram(binwidth = 1) +
+    coord_cartesian(xlim = c(0, 25)) +
+    ylim(0, 120) +
+    xlab("New COVID-19 Cases (% of Population)") +
+    ylab("Frequency") +
+    ggtitle("2021")
+  ,
+  nrow = 1,
+  top = textGrob("Figure 4.1 New COVID-19 Cases (% of Population) Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+```
+
+Figure 4.1 displays histograms of the new COVID-19 cases in terms of percentage of population over the years 2020 and 2021. The histogram for 2019 is not displayed as it is set to the value ‘0’ and would not serve any meaning. The two histograms are both skewed to the right, but have some noticeable differences. The values overall are much greater for 2021 and the skew is also less apparent, as the values are much more spread out. The maximum value is also significantly different. In 2020, it is around 10% but in 2021, it is around 23% of the population. This portrays the overall increase in the number of cases over the two years and how fast the spread of the disease was. This is even more apparent in the table below.
+
+&nbsp;
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+
+#table of top performing countries for each variable - COVID
+tmp = covid_prop[,-2]
+top_COVID <- bind_rows(    #binding top performing countries' rows altogether
+  tmp %>% filter(Year == 2020) %>% arrange(desc(Cases_prop)) %>% select(Country, Year, Cases_prop) %>% head(10) %>% mutate(Rank = rank(desc(Cases_prop))),
+  tmp %>% filter(Year == 2021) %>% arrange(desc(Cases_prop)) %>% select(Country, Year, Cases_prop) %>% head(10) %>% mutate(Rank = rank(desc(Cases_prop)))
+)
+
+COVID2020 = top_COVID[c(1:10),]    #collecting data for each year - used for final table
+COVID2021 = top_COVID[c(11:20),]
+
+COVID2020 = COVID2020[,c(4, 1, 3)]   #reordering columns
+COVID2021 = COVID2021[,c(4, 1, 3)]
+
+colnames(COVID2020) = c("Rank", "20_Country", "20_cases(%)")   #renaming the columns
+colnames(COVID2021) = c("Rank", "21_Country", "21_cases(%)")
+
+COVID_table = left_join(COVID2020, COVID2021, by = c("Rank" = "Rank"))     #join into one table
+
+stargazer(COVID_table, type = "html",
+          summary = F,
+          header = F,
+          rownames = F,
+          title = "Figure 4.2 : Top 10 COVID-19 Cases (% of Population) For Each Year")
+
+```
+
+&nbsp;
+
+Figure 4.2 displays the top ten COVID-19 cases for each of the two years. The values are much greater - 2~3 times or greater - for 2021 in comparison to 2020. Andorra, Montenegro, San Marino, Czechia, and Georgia remain in the top ten list for both years. Interestingly, Seychelles is outside the top ten list of 2020 but has the highest percentage at 2021. Overall, it is very clear how quickly the COVID-19 pandemic escalated.
+
+# Linear Regression
+
+### Youth Literacy Rate
+
+$$\text{Youth_Literacy_Rate} = \alpha + \beta_1\text{GDP_pc} + \beta_2\text{Cases_prop} + \beta_3\text{GDP_pc}\times\text{Cases_prop} + \beta_4\text{GNI_pc} + \beta_5\text{National_income_pc}\\ \qquad \qquad \qquad + \beta_6\text{Urban_pop} + \beta_7\text{Gross_savings} + \beta_8\text{Unemployment_rate} + \beta_9\text{Net_primary_income} + \epsilon$$
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+# obtaining linear regression with interaction effect and all covariates
+model_youthliteracy = lm(Youth_Literacy_Rate ~ GDP_pc + Cases_prop + GDP_pc*Cases_prop + GNI_pc + National_income_pc + Urban_pop + Gross_savings + Unemployment_rate + Net_primary_income, data = main_data_frame_youthliteracy)
+
+#stargazer table
+stargazer(model_youthliteracy, 
+          type = "html", 
+          title = "Figure 5.1: Linear Regression for Youth Literacy Rate and GDP per capita and COVID-19 Casese")
+
+```
+
+&nbsp;
+
+The first linear regression uses the youth literacy rate as the education indicator and is displayed by figure 5.1 The constant is 84.917; when all the independent variables are equal to zero, the youth literacy rate is approximately 84.917%.
+
+When GDP_pc is 0, the marginal effect of Cases_prop on youth literacy rate is 0.899; for a 1% increase in the new COVID-19 cases (% of population), a 0.899% increase in youth literacy rate was associated. More generally, the marginal effect of Cases_prop is (0.899 - 0.00004*GDP_pc), indicating that the impact of Cases_prop on the youth literacy rate slightly decreases as GDP_pc increases. For each dollar increase in GDP_pc, the marginal effect of Cases_prop is decreased by 0.00004.
+
+When Cases_prop is 0, the marginal effect of GDP_pc on the youth literacy rate is -0.001, meaning that for each dollar increase in GDP per capita, a 0.001% decrease in youth literacy rate was associated. The marginal effect of GDP_pc is (-0.001 - 0.00004*Cases_prop). This is counter-intuitive, since one would expect an increase in GDP per capita to be associated with an increase in the youth literacy rate. However, it is also noticeable that the negative value is extremely small and thus, barely impacts the youth literacy rate. For each percent increase in the new COVID-19 cases (% of population), the marginal effect of GDP_pc on the youth literacy rate is decreased by 0.00004.
+
+The national_income_pc has a coefficient of 0.002; each unit increase in the national income per capita associated with an increase in the youth literacy rate of approximately 0.002%. The urban_pop coefficient is 0.085, meaning that each unit increase in the urban population was associated to an increase in the youth literacy rate of approximately 0.085%. The gross_savings coefficient is 0.141. An unit increase in the gross savings was associated with an increase in the youth literacy rate by approximately 0.141%. The unemployment rate has a coefficient of -0.003 meaning that an unit increase in the unemployment rate associates with a decrease in the youth literacy rate by approximately 0.003%.
+
+The coefficients of GNI_pc and net_primary_income are approximately zero. As such, according to this model, these two variables have either very little or no effect on the youth literacy rate, holding all other variables constant.
+
+All covariates, apart from the constant, are not statistically significant at the p<0.1 level, which implies that it cannot be concluded with confidence that these variables have a statistically significant impact on the youth literacy rate. The interaction term, GDP_pc * Cases_prop, is also not statistically significant at the p<0.1 level and thus, we cannot draw a strong conclusion about the interaction effect between the two variables on the youth literacy rate. The constant term is the only statistically significant term at the p<0.01 level.
+
+The R^2 value and adjusted R^2 value are both very low, at 0.212 and 0.096, respectively.
+
+### Secondary School Enrollment Rate (% of Gross)
+
+$$\text{Secondary_Enrollment_Rate} = \alpha + \beta_1\text{GDP_pc} + \beta_2\text{Cases_prop} + \beta_3\text{GDP_pc}\times\text{Cases_prop} + \beta_4\text{GNI_pc} + \beta_5\text{National_income_pc}\\ \qquad \qquad \qquad \qquad + \beta_6\text{Urban_pop} + \beta_7\text{Gross_savings} + \beta_8\text{Unemployment_rate} + \beta_9\text{Net_primary_income} + \epsilon$$
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+# obtaining linear regression with interaction effect and all covariates
+model_secondary = lm(Secondary_Enrollment_Rate ~ GDP_pc + Cases_prop + GDP_pc*Cases_prop +
+                       GNI_pc + National_income_pc + Urban_pop + Gross_savings + Unemployment_rate + Net_primary_income, data = main_data_frame_secondary)
+
+#stargazer table
+stargazer(model_secondary, 
+          type = "html", 
+          title = "Figure 6.1: Linear Regression Between Secondary School Enrollment Rate and GDP per capita and COVID-19 Cases")
+
+```
+
+&nbsp;
+
+Figure 6.1 presents a summary of the regression run using gross secondary school enrollment rate as the education indicator, or the dependent variable. The first thing to notice is that the number of observations is much greater for the second model in comparison to the model using youth literacy rate as the dependent variable (figure 5.1). The number of observations for this model is 171 while that of the prior model is 71.
+
+The constant is 65.643, indicating that the gross secondary school enrollment rate is approximately 65.643% when all independent variables equal 0.
+
+For this model, the marginal effect of Cases_prop on the gross secondary school enrollment rate when GDP_pc is equal to zero, is 0.934. This means that for every 1% increase in new COVID-19 cases (% of population), was an associated increase in the gross secondary school enrollment rate by approximately 0.934%. The marginal effect of Cases_prop is (0.934 - 0.00003 * GDP_pc). This means that for each dollar increase in GDP per capita, the marginal effect of Cases_prop on the gross secondary school enrollment rate decreases by approximately 0.00003 – the impact of Cases_prop decreases, very slightly, as GDP_pc increases.
+
+When Cases_prop is equal to zero, the marginal effect of GDP_pc on the gross secondary school enrollment rate is -0.0005. For each dollar increase in GDP per capita, the gross secondary school enrollment rate was associated with a decrease by approximately 0.0005%. The marginal effect of GDP_pc is equal to (-0.0005 - 0.00003 * Cases_prop), which displays that the impact of GDP_pc on the gross secondary school enrollment rate further decreases, though very slightly, as Cases_prop increases. Specifically, each percentage increase in new COVID-19 cases (% of population) decreases the marginal effect of GDP per capita on the gross secondary school enrollment rate by approximately 0.00003. Again, this does seem odd as one would anticipate an increase in the gross secondary school enrollment rate associated with an escalating GDP per capita. However, the decreasing value here is also very small, and is almost inconsequential on the gross secondary school enrollment rate.
+
+The coefficient of national_income_pc is 0.001; each unit increase in national_income_pc was associated with an increase of approximately 0.001% of the secondary enrollment rate. The urban_pop coefficient is 0.426, meaning that each unit increase in the urban population was associated with an increase in the secondary enrollment rate by approximately 0.426%. The gross_savings has a coefficient of -0.086; each unit increase associated to a decrease of secondary enrollment rate by about 0.086%. The unemployment rate also has a negative coefficient value of -0.428, associating with a decrease the secondary enrollment rate by 0.428% for each unit increase in unemployment rate.
+
+The coefficients for GNI_pc and net_primary_income, again, are approximately zero, conveying that they have either very little or no effect on the gross secondary school enrollment rate, holding all other variables constant.
+
+Another key difference between the two regression models is the difference in the statistical significance of the independent variables, as seen in figures 5.1 and 6.1. For this model, the national_income_pc, urban_pop, net_primary_income, and constant are all statistically significant at the p<0.01 level of significance. The Cases_prop is also statistically significant, but at a p<0.1 level. The interaction term for this model is not statistically significant at any given level, and it is not possible to draw a strong conclusion about the interaction effect between GDP_pc and Cases_prop on the gross secondary school enrollment rate.
+
+This model has a much higher R^2 value and adjusted R^2 value, of 0.442 and 0.411, respectively.
+
+&nbsp;
+
+# Scatterplots
+
+In order to further test the hypothesis, for each of the education variables, two scatter plots were created with linear regression lines. For each, the first scatter plot represents the relationship between new COVID-19 cases (% of population) and education of countries within the top quartile (highest 25%) of GDP per capita. The second scatter plot is for countries within the bottom quartile (lowest 25%) of GDP per capita.
+
+### Youth Literacy Rate
+
+```{r, warning = FALSE, message = FALSE}
+
+# creating scatterplots for literacy rate (for highest, lowest 25% in terms of GDP pc)
+#figuring out how many countries there are - finding out how many countries account for 25%
+# length(unique(main_data_frame_youthliteracy$Country))*.25   #58
+
+#finding out which countries are the top/bottom 25%
+average_GDPpc = main_data_frame_youthliteracy %>%
+  group_by(Country_code) %>%
+  summarise(Average_GDP_pc = mean(GDP_pc, na.rm = TRUE)) %>%
+  arrange(desc(Average_GDP_pc))
+
+topGDP = average_GDPpc %>% head(58)   #top 25%
+lowGDP = average_GDPpc %>% arrange(Average_GDP_pc) %>% head(58)   #lowest 25%
+
+#subset data for top/lowest countries only
+datafortop_literacy = main_data_frame_youthliteracy %>% filter(Country_code %in% topGDP$Country_code) %>% filter(Cases_prop != 0)
+dataforlow_literacy = main_data_frame_youthliteracy %>% filter(Country_code %in% lowGDP$Country_code) %>% filter(Cases_prop != 0)
+
+#get the best fit line
+lr_toplit = lm(Youth_Literacy_Rate ~ Cases_prop, datafortop_literacy)
+lr_lowlit = lm(Youth_Literacy_Rate ~ Cases_prop, dataforlow_literacy)
+
+#plot the scatterplot for literacy data
+grid.arrange(
+  ggplot(datafortop_literacy, aes(x = Cases_prop, y = Youth_Literacy_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 7.1: Top 25% GDP_pc",
+         x = "COVID Cases (% of Population)",
+         y = "Youth Literacy Rate") +
+    ylim(0, 100)
+  ,
+  ggplot(dataforlow_literacy, aes(x = Cases_prop, y = Youth_Literacy_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 7.2: Bottom 25% GDP_pc",
+         x = "COVID Cases (% of Population)",
+         y = "Youth Literacy Rate") +
+    ylim(0, 100)
+  ,
+  nrow = 1,
+  top = textGrob("COVID-19 Cases vs Youth Literacy Rate \n", gp = gpar(fontsize = 15))   #adding title
+  
+)
+  
+
+```
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+stargazer(lr_toplit, type = "html", title = "Figure 7.3: Linear Regression Between Youth Literacy Rate and COVID-19 Cases for Top 25% GDP per capita Countries")
+```
+
+&nbsp;
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+stargazer(lr_lowlit, type = "html", title = "Figure 7.4: Linear Regression Between Youth Literacy Rate and COVID-19 Cases for Bottom 25% GDP per capita Countries")
+```
+
+&nbsp;
+
+Figure 7.1 displays the scatter plot for youth literacy rate for countries within the top quartile of GDP per capita and figure 7.3 displays the summary table of the linear regression of the scatter plot above it. Figure 7.2 displays the scatter plot for countries within the lower quartile of GDP per capita and figure 7.4 displays the summary table of the linear regression of that scatter plot.
+
+Counter-intuitively, the slope of the linear regression is actually more positive for the bottom quartile, which means that as the new COVID-19 cases (% of population) increases, the youth literacy rate actually increases, and increases at a faster rate for countries within the bottom quartile of GDP per capita. The coefficient of Cases_prop is 0.043 for countries in the top quartile, meaning that an increase in an unit of Cases_prop associated to approximately 0.043% increase in the youth literacy rate. The coefficient of Cases_prop for countries in the bottom quartile is much greater, at 15.668. For each unit increase in Cases_prop, the youth literacy rate was associated with an increase by approximately 15.668%.
+
+It is also odd that for both scatter plots, the linear regression has a positive slope as one would assume that an increase in COVID-19 cases should decrease the youth literacy rate. It is also key to note that the COVID-19 cases (% of population) values are much greater for the top quartile countries in general. This may be due to a number of factors. Countries with higher GDP per capita could have higher levels of urbanization and thus, the higher population density could have led to a faster spreading in the disease. Another possibility is that countries with higher GDP per capita could have more allocated funds on testing kits and tracking the COVID-19 cases. As such, these countries may have been able to more accurately track the number of COVID-19 cases in comparison to the countries with lower GDP per capita. As such, apart from the results of the plot, a potential interpretation of recording a higher number of cases could be indicative of a country's enhanced state capacity, possibly reflecting a more effective public education system. These are only potential factors and are not the causation behind the results.
+
+Another key takeaway from this is that the youth literacy rate values are much greater for the top quartile countries. The constant for the top quartile linear regression is 98.820 while the constant for the bottom quartile linear regression is a much lower value of 72.277. For countries in the top quartile of GDP per capita, when there are no COVID cases, the youth literacy rate is at 98.820%, and for lower quartile countries, the youth literacy rate is much lower, at 72.277%. Additionally, the range of values for the top quartile countries is very highly clustered at the range 98~100% with just one outlier below, but the range of values for the bottom quartile countries is much more spread out to lower values.
+
+&nbsp;
+
+### Secondary School Enrollment Rate (% of Gross)
+
+```{r, warning = FALSE, message = FALSE}
+
+#scatterplot for enrollment rate
+#subset data for top/lowest countries only
+datafortop_enrollment = main_data_frame_secondary %>% filter(Country_code %in% topGDP$Country_code) %>% filter(Cases_prop != 0)
+dataforlow_enrollment = main_data_frame_secondary %>% filter(Country_code %in% lowGDP$Country_code) %>% filter(Cases_prop != 0)
+
+#get the best fit line
+enrollment_toplit = lm(Secondary_Enrollment_Rate ~ Cases_prop, datafortop_enrollment)
+enrollment_lowlit = lm(Secondary_Enrollment_Rate ~ Cases_prop, dataforlow_enrollment)
+
+#plot the scatterplot for enrollment rate
+grid.arrange(
+  ggplot(datafortop_enrollment, aes(x = Cases_prop, y = Secondary_Enrollment_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 8.1: Top 25% GDP_pc",
+         x = "COVID Cases (% of Population)",
+         y = "Secondary Enrollment Rate (% Gross)") +
+    ylim(0, 170)
+  ,
+  ggplot(dataforlow_enrollment, aes(x = Cases_prop, y = Secondary_Enrollment_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 8.2: Bottom 25% GDP_pc",
+         x = "COVID Cases (% of Population)",
+         y = "Secondary Enrollment Rate (% Gross)") +
+    ylim(0, 170)
+  ,
+  nrow = 1,
+  top = textGrob("COVID-19 Cases vs Secondary School Enrollment Rate \n", gp = gpar(fontsize = 15))   #adding title
+  
+)
+
+
+```
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+stargazer(enrollment_toplit, type = "html", title = "Figure 8.3: Linear Regression Between Secondary School Enrollment Rate and COVID-19 Cases for Top 25% GDP per capita Countries")
+```
+
+&nbsp;
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+stargazer(enrollment_lowlit, type = "html", title = "Figure 8.4: Linear Regression Between Secondary School Enrollment Rate and COVID-19 Cases for Bottom 25% GDP per capita Countries")
+```
+
+&nbsp;
+
+Figure 8.1 displays the scatter plot for gross secondary school enrollment rate for countries within the top quartile of GDP per capita and figure 8.3 displays the summary table of the linear regression of the scatter plot above it. Figure 8.2 displays the scatter plot for countries within the lower quartile of GDP per capita and figure 8.4 displays the summary table of the linear regression of that scatter plot.
+
+The slopes of these two scatter plots are also very counter-intuitive. The slope is actually negative for the top quartile countries, and is positive for the bottom quartile countries, while one would expect the opposite. Countries with lower GDP per capita levels would be expected to face decreases in enrollment rates as COVID-19 cases increase as they are less likely to have the tools, such as technology devices, required for remote education environments. However, figure 8.4 shows that for bottom quartile countries, the coefficient of Cases_prop is actually a positive, and very large value of 22.532; each unit increase in the COVID-19 cases (% of population) associated an increase in the gross secondary school enrollment rate by 22.532%. As seen in figure 8.2, for the upper quartile countries, the coefficient of Cases_prop is -2.466. For each unit increase in the COVID-19 cases (% of population), the gross secondary school enrollment rate was associated with a decrease by 2.466%.
+
+However, the overall range of values and the value of the constant are also essential to note. The constant for the top quartile countries is 117.892 while that for the lower quartile countries is 49.676. This means that when there are no COVID-19 cases, for countries within the top quartile of GDP per capita, the gross secondary school enrollment rate is approximately 117.892% while that for countries within the bottom quartile is approximately 49.676%.
+
+&nbsp;
+
+# Conclusion
+
+In conclusion, there was not substantial statistical evidence to support the proposed hypothesis. This doesn't necessarily mean that there's no relationship between the variables; rather, it emphasizes the complexity of the situation and the potential influence of other factors not accounted for in this study. Furthermore, some key limitations of this report must also be addressed.
+
+First is limitations regarding availability of data and number of observations. As briefly discussed in the initial part of the report, many indicators had many missing data for the year 2021. Thus, even though variables with higher numbers of observations were chosen, the observations were still less than the available data for prior years. This was especially so for education indicators. Education data from other sources, including the United Nations, UNESCO, and UIS, were explored, but all sources had similarly many missing data. Among education indicators from the World Bank, the youth literacy rate and gross secondary school enrollment rate were among the data with highest observations, and thus, were chosen to represent education.
+
+Net school enrollment rate (primary and/or secondary) would have been an ideal choice for the education variable as it specifically measures the percentage of official primary or secondary school age population who are enrolled in school. This is a more direct measure of the extent to which children of the official primary or secondary school age are attending school. However, the net enrollment data was largely missing (most of the observations were missing) and thus, the gross secondary school enrollment rate was used as an alternative. This indicator is also very useful as a substitute as it provides overall insights into the general level of participation in secondary school education.
+
+Furthermore, this report utilizes a linear causal relationship model between the variables, but the relationship could be otherwise and could also be nonlinear. By testing different variations and types of regression models, a more statistically significant result may have been obtained.
+
+There are causal limitations as well. Though the omitted variable bias was addressed and reduced to an extent, by adding in additional covariates, there are much more unmeasured confounding variables, like the health system infrastructure. Not accounting for these factors may have biased the estimated effects and results of this report.
+
+Furthermore, this report utilizes a model that assumes that GDP per capita and COVID-19 cases affect education, but the relationship could be bidirectional and this could impact the results of the statistical analysis as well. If this is the case, the estimated effects could be biased.
+
+Additionally, this report uses observational data, not experimental data, and thus, since it is not a random assignment data – countries are not randomly assigned different levels of GDP per capita or COVID-19 cases (and it is impossible to do so) – the estimated effects may have been biased.
+
+Finally, it is important to note that there is no causal inference implied by any of the results of this study and that only correlations were attempted to be drawn.
+
+&nbsp;
+
+# Appendix
+
+```{r, eval = FALSE, echo = TRUE}
+
+# setwd("~/Desktop/Spring 2023/Statistics and Data Analytics/Final Project")
+library(countrycode)
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(tidyr)
+library(tidyverse)
+library(readxl)
+library(gridExtra)
+library(ggplot2)
+library(grid)
+library(stargazer)
+library(broom)
+library(texreg)
+library(dagitty)
+
+# mask for all countries
+validcodes = codelist$iso3c
+
+# literacy rate - world development indicator
+education = read.csv("education.csv")
+
+# wealth indicators - world development indicator
+wealth = read.csv("wealth.csv")
+
+# covid indicators - WHO
+covid = read.csv("WHO-COVID-19-global-data.csv")
+
+# population - used to get a percentage for the covid indicator (from UN)
+population = read.csv("population.csv")
+population = population[,c(4, 13, 17)]
+
+
+
+# deleting useless rows/columns
+education = education[,-4]
+education = education[education$Country.Code %in% validcodes,]
+
+wealth = wealth[,-4]
+wealth = wealth[wealth$Country.Code %in% validcodes,]
+
+covid$Country_code= countrycode(sourcevar = covid$Country_code, 
+                                origin = "iso2c",
+                                destination ="iso3c" )
+covid = covid[covid$Country_code %in% validcodes,]
+covid <- covid[complete.cases(covid), ] #removes data with missing country codes
+
+
+population = population[population$ISO3_code %in% validcodes,]
+
+# replacing unavailable data ".." with NA
+education[education == ".."] = NA
+wealth[wealth == ".."] = NA
+
+# renaming columns
+colnames(education) = c("Country_Name", "Country_Code", "Year", "Primary_Enrollment_Rate", "Youth_Literacy_Rate" ,
+                        "Secondary_Enrollment_Rate")
+
+colnames(wealth) = c("Country_Name", "Country_Code", "Year", "Highest_10ps",
+                     "Lowest_10ps", "GDP_pc", "GNI_pc", "Poverty_ratio", "Gini",
+                     "National_income_pc", "Urban_pop", "Gross_savings", "Unemployment_rate", "Net_primary_income")
+
+colnames(population) = c("Country_Code", "Year", "Population")
+
+# simplifying the covid data to per year - to match other data sets
+covid$Date_reported = as.Date(covid$Date_reported)
+covid_year = covid %>%
+  group_by(Country, Country_code, Year = year(Date_reported)) %>%
+  summarize(New_cases = sum(New_cases))
+
+# removing all rows with year == 2023 since it is not complete
+covid_year <- covid_year %>% filter(Year != 2023)
+
+# changing data formats
+education$Year = as.numeric(education$Year)
+education$Youth_Literacy_Rate = as.numeric(education$Youth_Literacy_Rate)
+education$Secondary_Enrollment_Rate = as.numeric(education$Secondary_Enrollment_Rate)
+
+
+wealth$Year = as.numeric(wealth$Year)
+wealth$Highest_10ps = as.numeric(wealth$Highest_10ps)
+wealth$Lowest_10ps = as.numeric(wealth$Lowest_10ps)
+wealth$GDP_pc = as.numeric(wealth$GDP_pc)
+wealth$GNI_pc = as.numeric(wealth$GNI_pc)
+wealth$Poverty_ratio = as.numeric(wealth$Poverty_ratio)
+wealth$Gini = as.numeric(wealth$Gini)
+wealth$National_income_pc = as.numeric(wealth$National_income_pc)
+wealth$Urban_pop = as.numeric(wealth$Urban_pop)
+wealth$Gross_savings = as.numeric(wealth$Gross_savings)
+wealth$Unemployment_rate = as.numeric(wealth$Unemployment_rate)
+wealth$Net_primary_income = as.numeric(wealth$Net_primary_income)
+
+
+population$Year = as.numeric(population$Year)
+population$Population = as.numeric(population$Population)
+population$Population = 1000*population$Population #population is in thousands
+
+# Remove rows with year > 2021 (they are estimates using models)
+population <- subset(population, Year <= 2021 & Year > 2018)
+
+# merge covid_year and population and make it new_cases/population (a percentage)
+covid_prop = left_join(covid_year, population,
+                       by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+covid_prop = covid_prop[complete.cases(covid_prop),]  #remove rows with missing data
+
+# add column for the proportion of population of new cases
+covid_prop$Cases_prop = covid_prop$New_cases/covid_prop$Population * 100
+
+#add rows for year 2019 and add into data frame - make all values 0
+new_rows2 = expand.grid(Country_code = unique(covid_prop$Country_code), Year = 2019, Cases_prop = 0)
+
+covid_prop = rbind(covid_prop, new_rows2)
+
+#add in the country names
+covid_prop = covid_prop %>% group_by(Country_code) %>% 
+  fill(Country, .direction = "down")
+  
+#Create the data frame with all variables
+main_data_frame_youthliteracy = covid_prop %>% select(Country, Country_code, Year, Cases_prop)
+
+main_data_frame_youthliteracy = left_join(main_data_frame_youthliteracy, select(education, c("Country_Code", "Year", "Youth_Literacy_Rate")), 
+                            by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+#removing some variables because of very little data availbility - ~70
+main_data_frame_youthliteracy = left_join(main_data_frame_youthliteracy, select(wealth, -c("Country_Name", "Highest_10ps", "Lowest_10ps", "Poverty_ratio", "Gini")),
+                                          by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+#Create data frame for secondary enrollment rate
+main_data_frame_secondary = covid_prop %>% select(Country, Country_code, Year, Cases_prop)
+
+main_data_frame_secondary = left_join(main_data_frame_secondary, select(education, c("Country_Code", "Year", "Secondary_Enrollment_Rate")), 
+                                          by = c("Country_code" = "Country_Code", "Year" = "Year"))
+
+#removing some variables because of very little data availbility - ~70
+main_data_frame_secondary = left_join(main_data_frame_secondary, select(wealth, -c("Country_Name", "Highest_10ps", "Lowest_10ps", "Poverty_ratio", "Gini")),
+                                          by = c("Country_code" = "Country_Code", "Year" = "Year"))                                          
+
+
+
+#creating a DAG
+g = dagitty("dag{
+            COVID_19 -> Education
+            GDP_per_capita -> COVID_19
+            GDP_per_capita -> Education
+            }")
+
+coordinates(g) = list(x = c(COVID_19 = 1, Education = 2, GDP_per_capita = 1.5),
+                      y = c(COVID_19 = 1, Education = 1, GDP_per_capita = 1.5))
+
+plot(g, main = "")
+
+
+
+# data visualisation of youth literacy rate distributions
+grid.arrange(
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2019)) +
+    aes(x = Youth_Literacy_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 105)) +
+    ylim(0, 40) +
+    xlab("Youth Literacy Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2019")
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2020)) +
+    aes(x = Youth_Literacy_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 105)) +
+    ylim(0, 40) +
+    xlab("Youth Literacy Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2020")
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2021)) +
+    aes(x = Youth_Literacy_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 105)) +
+    ylim(0, 40) +
+    xlab("Youth Literacy Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2021")
+  ,
+  nrow = 1,
+  top = textGrob("Figure 1.1 Youth Literacy Rate Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+
+
+# data visualisation of secondary enrollment rate distributions
+grid.arrange(
+  ggplot(data = main_data_frame_secondary %>% filter(Year == 2019)) +
+    aes(x = Secondary_Enrollment_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 160)) +
+    ylim(0, 18) +
+    xlab("Enrollment Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2019")
+  ,
+  ggplot(data = main_data_frame_secondary %>% filter(Year == 2020)) +
+    aes(x = Secondary_Enrollment_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 160)) +
+    ylim(0, 18) +
+    xlab("Enrollment Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2020")
+  ,
+  ggplot(data = main_data_frame_secondary %>% filter(Year == 2021)) +
+    aes(x = Secondary_Enrollment_Rate) +
+    geom_histogram(binwidth = 5) +
+    coord_cartesian(xlim = c(0, 160)) +
+    ylim(0, 18) +
+    xlab("Enrollment Rate (%)") +
+    ylab("Frequency") +
+    ggtitle("2021")
+  ,
+  nrow = 1,
+  top = textGrob("Figure 2.1 Secondary School Enrollment Rate (% of Gross) Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+
+
+# data visualization of GDP distributions
+grid.arrange(
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2019)) +
+    aes(x = GDP_pc) +
+    geom_histogram(binwidth = 5000) +
+    xlab("GDP Per Capita") +
+    ylab("Frequency") +
+    coord_cartesian(xlim = c(-0, 250000)) +
+    ylim(0, 60) +
+    ggtitle("2019") +
+    scale_x_continuous(breaks = seq(0, 240000, 120000), labels = seq(0, 240000, 120000))
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2020)) +
+    aes(x = GDP_pc) +
+    geom_histogram(binwidth = 5000) +
+    xlab("GDP Per Capita") +
+    ylab("Frequency") +
+    coord_cartesian(xlim = c(0, 250000)) +
+    ylim(0, 60) +
+    ggtitle("2020") +
+    scale_x_continuous(breaks = seq(0, 240000, 120000), labels = seq(0, 240000, 120000))
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2021)) +
+    aes(x = GDP_pc) +
+    geom_histogram(binwidth = 5000) +
+    xlab("GDP Per Capita") +
+    ylab("Frequency") +
+    coord_cartesian(xlim = c(0, 250000)) +
+    ylim(0, 60) +
+    ggtitle("2021") +
+    scale_x_continuous(breaks = seq(0, 240000, 120000), labels = seq(0, 240000, 120000))
+  ,
+  nrow = 1,
+  top = textGrob("Figure 3.1 GDP per capita Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+
+
+# data visualisation of COVID distributions - no 2019 because it's all 0 anyways
+grid.arrange(
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2020)) +
+    aes(x = Cases_prop) +
+    geom_histogram(binwidth = 1) +
+    coord_cartesian(xlim = c(0, 25)) +
+    ylim(0, 120) +
+    xlab("New COVID-19 Cases (% of Population)") +
+    ylab("Frequency") +
+    ggtitle("2020")
+  ,
+  ggplot(data = main_data_frame_youthliteracy %>% filter(Year == 2021)) +
+    aes(x = Cases_prop) +
+    geom_histogram(binwidth = 1) +
+    coord_cartesian(xlim = c(0, 25)) +
+    ylim(0, 120) +
+    xlab("New COVID-19 Cases (% of Population)") +
+    ylab("Frequency") +
+    ggtitle("2021")
+  ,
+  nrow = 1,
+  top = textGrob("Figure 4.1 New COVID-19 Cases (% of Population) Distribution \n", gp = gpar(fontsize = 10))   #adding title
+)
+
+
+
+#table of top performing countries for each variable - COVID
+tmp = covid_prop[,-2]
+top_COVID <- bind_rows(    #binding top performing countries' rows altogether
+  tmp %>% filter(Year == 2020) %>% arrange(desc(Cases_prop)) %>% select(Country, Year, Cases_prop) %>% head(10) %>% mutate(Rank = rank(desc(Cases_prop))),
+  tmp %>% filter(Year == 2021) %>% arrange(desc(Cases_prop)) %>% select(Country, Year, Cases_prop) %>% head(10) %>% mutate(Rank = rank(desc(Cases_prop)))
+)
+
+COVID2020 = top_COVID[c(1:10),]    #collecting data for each year - used for final table
+COVID2021 = top_COVID[c(11:20),]
+
+COVID2020 = COVID2020[,c(4, 1, 3)]   #reordering columns
+COVID2021 = COVID2021[,c(4, 1, 3)]
+
+colnames(COVID2020) = c("Rank", "20_Country", "20_cases(%)")   #renaming the columns
+colnames(COVID2021) = c("Rank", "21_Country", "21_cases(%)")
+
+COVID_table = left_join(COVID2020, COVID2021, by = c("Rank" = "Rank"))     #join into one table
+
+stargazer(COVID_table, type = "html",
+          summary = F,
+          header = F,
+          rownames = F,
+          title = "Figure 4.2 : Top 10 COVID-19 Cases (% of Population) For Each Year")
+
+
+
+# obtaining linear regression with interaction effect and all covariates
+model_youthliteracy = lm(Youth_Literacy_Rate ~ GDP_pc + Cases_prop + GDP_pc*Cases_prop + GNI_pc + National_income_pc + Urban_pop + Gross_savings + Unemployment_rate + Net_primary_income, data = main_data_frame_youthliteracy)
+
+
+
+#stargazer table
+stargazer(model_youthliteracy, 
+          type = "html", 
+          title = "Figure 5.1: Linear Regression for Youth Literacy Rate and GDP per capita and COVID-19 Casese")
+
+
+
+# obtaining linear regression with interaction effect and all covariates
+model_secondary = lm(Secondary_Enrollment_Rate ~ GDP_pc + Cases_prop + GDP_pc*Cases_prop +
+                       GNI_pc + National_income_pc + Urban_pop + Gross_savings + Unemployment_rate + Net_primary_income, data = main_data_frame_secondary)
+
+
+
+#stargazer table
+stargazer(model_secondary, 
+          type = "html", 
+          title = "Figure 6.1: Linear Regression Between Secondary School Enrollment Rate and GDP per capita and COVID-19 Cases")
+
+
+
+# creating scatterplots for literacy rate (for highest, lowest 25% in terms of GDP pc)
+#figuring out how many countries there are - finding out how many countries account for 25%
+# length(unique(main_data_frame_youthliteracy$Country))*.25   #58
+
+#finding out which countries are the top/bottom 25%
+average_GDPpc = main_data_frame_youthliteracy %>%
+  group_by(Country_code) %>%
+  summarise(Average_GDP_pc = mean(GDP_pc, na.rm = TRUE)) %>%
+  arrange(desc(Average_GDP_pc))
+
+topGDP = average_GDPpc %>% head(58)   #top 25%
+lowGDP = average_GDPpc %>% arrange(Average_GDP_pc) %>% head(58)   #lowest 25%
+
+#subset data for top/lowest countries only
+datafortop_literacy = main_data_frame_youthliteracy %>% filter(Country_code %in% topGDP$Country_code) %>% filter(Cases_prop != 0)
+dataforlow_literacy = main_data_frame_youthliteracy %>% filter(Country_code %in% lowGDP$Country_code) %>% filter(Cases_prop != 0)
+
+#get the best fit line
+lr_toplit = lm(Youth_Literacy_Rate ~ Cases_prop, datafortop_literacy)
+lr_lowlit = lm(Youth_Literacy_Rate ~ Cases_prop, dataforlow_literacy)
+
+#plot the scatterplot for literacy data
+ggplot(datafortop_literacy, aes(x = Cases_prop, y = Youth_Literacy_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 7.1: COVID-19 Cases vs Youth Literacy Rate of Top 25% GDP_pc \n Performers",
+         x = "COVID Cases (% of Population)",
+         y = "Youth Literacy Rate")
+
+
+stargazer(lr_toplit, type = "html", title = "Figure 7.2: Linear Regression Between Youth Literacy Rate and COVID-19 Cases for Top 25% GDP per capita Countries")
+
+ggplot(dataforlow_literacy, aes(x = Cases_prop, y = Youth_Literacy_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 7.3: COVID-19 Cases vs Youth Literacy Rate of Bottom 25% GDP_pc \n Performers",
+         x = "COVID Cases (% of Population)",
+         y = "Youth Literacy Rate")
+
+stargazer(lr_lowlit, type = "html", title = "Figure 7.4: Linear Regression Between Youth Literacy Rate and COVID-19 Cases for Bottom 25% GDP per capita Countries")
+
+
+
+
+#scatterplot for enrollment rate
+#subset data for top/lowest countries only
+datafortop_enrollment = main_data_frame_secondary %>% filter(Country_code %in% topGDP$Country_code) %>% filter(Cases_prop != 0)
+dataforlow_enrollment = main_data_frame_secondary %>% filter(Country_code %in% lowGDP$Country_code) %>% filter(Cases_prop != 0)
+
+#get the best fit line
+enrollment_toplit = lm(Secondary_Enrollment_Rate ~ Cases_prop, datafortop_enrollment)
+enrollment_lowlit = lm(Secondary_Enrollment_Rate ~ Cases_prop, dataforlow_enrollment)
+
+#plot the scatterplot for enrollment rate
+
+ggplot(datafortop_enrollment, aes(x = Cases_prop, y = Secondary_Enrollment_Rate)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, col = "black") +
+  labs(title = "Figure 8.1: COVID-19 Cases vs Secondary School Enrollment Rate of Top \n 25% GDP_pc Performers",
+       x = "COVID Cases (% of Population)",
+       y = "Secondary School Enrollment Rate (% Gross)")
+
+
+
+stargazer(enrollment_toplit, type = "html", title = "Figure 8.2: Linear Regression Between Secondary School Enrollment Rate and COVID-19 Cases for Top 25% GDP per capita Countries")
+
+
+ggplot(dataforlow_enrollment, aes(x = Cases_prop, y = Secondary_Enrollment_Rate)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, col = "black") +
+    labs(title = "Figure 8.3: COVID-19 Cases vs Secondary School Enrollment Rate of Bottom \n 25% GDP_pc Performers",
+         x = "COVID Cases (% of Population)",
+         y = "Secondary School Enrollment Rate (% Gross)")
+
+
+stargazer(enrollment_lowlit, type = "html", title = "Figure 8.4: Linear Regression Between Secondary School Enrollment Rate and COVID-19 Cases for Bottom 25% GDP per capita Countries")
+
+
+```
+
